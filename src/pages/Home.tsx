@@ -2,12 +2,124 @@ import { useState, useEffect } from 'react';
 import { FiDownload, FiCopy, FiSun, FiMoon } from 'react-icons/fi';
 import QRCode from 'qrcode';
 
+function drawRoundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  const rr = Math.min(r, Math.min(w, h) / 2);
+  ctx.beginPath();
+  ctx.moveTo(x + rr, y);
+  ctx.arcTo(x + w, y, x + w, y + h, rr);
+  ctx.arcTo(x + w, y + h, x, y + h, rr);
+  ctx.arcTo(x, y + h, x, y, rr);
+  ctx.arcTo(x, y, x + w, y, rr);
+  ctx.closePath();
+}
+
+async function composeQrWithLogo(qrDataUrl: string, logoDataUrl: string, opts: { sizeRatio: number; paddingRatio: number; rounded: boolean; darkMode: boolean; }) {
+  const canBitmap = typeof createImageBitmap === 'function';
+  const safeSizeRatio = Math.min(Math.max(opts.sizeRatio, 0.10), 0.30);
+  const safePaddingRatio = Math.min(Math.max(opts.paddingRatio, 0), 0.08);
+  if (canBitmap) {
+    const qrBlob = await fetch(qrDataUrl).then(r => r.blob());
+    const logoBlob = await fetch(logoDataUrl).then(r => r.blob());
+    const qrBmp = await createImageBitmap(qrBlob);
+    const logoBmp = await createImageBitmap(logoBlob);
+    const size = Math.max(qrBmp.width, qrBmp.height);
+    const canvas = document.createElement('canvas');
+    canvas.width = size;
+    canvas.height = size;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Canvas context not available');
+    ctx.imageSmoothingEnabled = true;
+    ctx.drawImage(qrBmp, 0, 0, size, size);
+    const boxSize = Math.round(size * safeSizeRatio);
+    const padding = Math.round(size * safePaddingRatio);
+    const centerX = Math.round(size / 2 - boxSize / 2);
+    const centerY = Math.round(size / 2 - boxSize / 2);
+    const backdropColor = '#FFFFFF';
+    ctx.fillStyle = backdropColor;
+    if (opts.rounded) {
+      drawRoundedRect(ctx, centerX, centerY, boxSize, boxSize, Math.round(boxSize * 0.12));
+      ctx.fill();
+    } else {
+      ctx.fillRect(centerX, centerY, boxSize, boxSize);
+    }
+    const maxLogoW = boxSize - padding * 2;
+    const maxLogoH = boxSize - padding * 2;
+    const logoAspect = logoBmp.width / logoBmp.height;
+    const fitW = maxLogoW;
+    const fitH = Math.round(fitW / logoAspect);
+    let drawW = fitW;
+    let drawH = fitH;
+    if (drawH > maxLogoH) {
+      drawH = maxLogoH;
+      drawW = Math.round(drawH * logoAspect);
+    }
+    const drawX = Math.round(size / 2 - drawW / 2);
+    const drawY = Math.round(size / 2 - drawH / 2);
+    ctx.drawImage(logoBmp, drawX, drawY, drawW, drawH);
+    return canvas.toDataURL('image/png');
+  }
+  return await new Promise<string>((resolve, reject) => {
+    const qrImg = new Image();
+    qrImg.onload = () => {
+      const size = Math.max(qrImg.width, qrImg.height);
+      const canvas = document.createElement('canvas');
+      canvas.width = size;
+      canvas.height = size;
+      const ctx = canvas.getContext('2d');
+      if (!ctx) {
+        reject(new Error('Canvas context not available'));
+        return;
+      }
+      ctx.imageSmoothingEnabled = true;
+      ctx.drawImage(qrImg, 0, 0, size, size);
+      const logoImg = new Image();
+      logoImg.onload = () => {
+        const boxSize = Math.round(size * safeSizeRatio);
+        const padding = Math.round(size * safePaddingRatio);
+        const centerX = Math.round(size / 2 - boxSize / 2);
+        const centerY = Math.round(size / 2 - boxSize / 2);
+        const backdropColor = '#FFFFFF';
+        ctx.fillStyle = backdropColor;
+        if (opts.rounded) {
+          drawRoundedRect(ctx, centerX, centerY, boxSize, boxSize, Math.round(boxSize * 0.12));
+          ctx.fill();
+        } else {
+          ctx.fillRect(centerX, centerY, boxSize, boxSize);
+        }
+        const maxLogoW = boxSize - padding * 2;
+        const maxLogoH = boxSize - padding * 2;
+        const logoAspect = logoImg.width / logoImg.height;
+        const fitW = maxLogoW;
+        const fitH = Math.round(fitW / logoAspect);
+        let drawW = fitW;
+        let drawH = fitH;
+        if (drawH > maxLogoH) {
+          drawH = maxLogoH;
+          drawW = Math.round(drawH * logoAspect);
+        }
+        const drawX = Math.round(size / 2 - drawW / 2);
+        const drawY = Math.round(size / 2 - drawH / 2);
+        ctx.drawImage(logoImg, drawX, drawY, drawW, drawH);
+        resolve(canvas.toDataURL('image/png'));
+      };
+      logoImg.onerror = () => reject(new Error('Failed to load logo image'));
+      logoImg.src = logoDataUrl;
+    };
+    qrImg.onerror = () => reject(new Error('Failed to load QR image'));
+    qrImg.src = qrDataUrl;
+  });
+}
+
 export default function Home() {
   const [url, setUrl] = useState('');
   const [qrCodeDataUrl, setQrCodeDataUrl] = useState<string | null>(null);
   const [isGenerating, setIsGenerating] = useState(false);
   const [copied, setCopied] = useState(false);
   const [isDarkMode, setIsDarkMode] = useState(true);
+  const [logoDataUrl, setLogoDataUrl] = useState<string | null>(null);
+  const [logoSizeRatio, setLogoSizeRatio] = useState(0.18);
+  const [logoPaddingRatio, setLogoPaddingRatio] = useState(0.04);
+  const [logoRounded, setLogoRounded] = useState(true);
 
   // Load theme preference from localStorage
   useEffect(() => {
@@ -25,6 +137,16 @@ export default function Home() {
     document.documentElement.setAttribute('data-theme', isDarkMode ? 'dark' : 'light');
     localStorage.setItem('theme', isDarkMode ? 'dark' : 'light');
   }, [isDarkMode]);
+
+  useEffect(() => {
+    if (!logoDataUrl) return;
+    if (!url.trim()) return;
+    if (isGenerating) return;
+    const t = setTimeout(() => {
+      generateQRCode();
+    }, 250);
+    return () => clearTimeout(t);
+  }, [logoDataUrl, logoSizeRatio, logoPaddingRatio, logoRounded]);
 
   const toggleTheme = () => {
     setIsDarkMode(!isDarkMode);
@@ -47,10 +169,24 @@ export default function Home() {
           dark: '#000000',
           light: '#FFFFFF'
         },
-        errorCorrectionLevel: 'M'
+        errorCorrectionLevel: logoDataUrl ? 'H' : 'M'
       });
+      let finalUrl = dataUrl;
+      if (logoDataUrl) {
+        try {
+          finalUrl = await composeQrWithLogo(dataUrl, logoDataUrl, {
+            sizeRatio: logoSizeRatio,
+            paddingRatio: logoPaddingRatio,
+            rounded: logoRounded,
+            darkMode: isDarkMode
+          });
+        } catch (e) {
+          console.error('Logo composition failed, using plain QR:', e);
+          finalUrl = dataUrl;
+        }
+      }
       console.log('QR code generated successfully');
-      setQrCodeDataUrl(dataUrl);
+      setQrCodeDataUrl(finalUrl);
     } catch (error) {
       console.error('Error generating QR code:', error);
     } finally {
@@ -124,6 +260,71 @@ export default function Home() {
                 style={{fontFamily: 'VT323, Courier New, monospace', backgroundColor: 'var(--bg-tertiary)', borderColor: 'var(--border-secondary)'}}
                 onKeyPress={(e) => e.key === 'Enter' && generateQRCode()}
               />
+              </div>
+
+              <div className="relative z-10">
+                <label className="block text-[var(--text-secondary)] font-mono text-sm mb-2 uppercase tracking-wider" style={{fontFamily: 'VT323, Courier New, monospace'}}>
+                  UPLOAD LOGO (PNG/JPG/SVG)
+                </label>
+                <input
+                  type="file"
+                  accept="image/png,image/jpeg,image/svg+xml"
+                  onChange={(e) => {
+                    const file = e.target.files && e.target.files[0];
+                    if (!file) return;
+                    const reader = new FileReader();
+                    reader.onload = () => {
+                      const result = reader.result as string;
+                      setLogoDataUrl(result);
+                    };
+                    reader.readAsDataURL(file);
+                  }}
+                  className="w-full px-4 py-2 border-2 text-[var(--text-primary)] font-mono text-base placeholder-[var(--text-tertiary)] focus:outline-none focus:border-[var(--brand-color)] focus:ring-2 focus:ring-[var(--brand-color)] hover:border-[var(--brand-color)] transition-all duration-200"
+                  style={{fontFamily: 'VT323, Courier New, monospace', backgroundColor: 'var(--bg-tertiary)', borderColor: 'var(--border-secondary)'}}
+                />
+                {logoDataUrl && (
+                  <div className="mt-3 space-y-3">
+                    <div>
+                      <label className="block text-[var(--text-secondary)] font-mono text-sm mb-1 uppercase tracking-wider" style={{fontFamily: 'VT323, Courier New, monospace'}}>LOGO SIZE</label>
+                      <input
+                        type="range"
+                        min={10}
+                        max={30}
+                        value={Math.round(logoSizeRatio * 100)}
+                        onChange={(e) => setLogoSizeRatio(parseInt(e.target.value, 10) / 100)}
+                        className="w-full"
+                      />
+                    </div>
+                    <div>
+                      <label className="block text-[var(--text-secondary)] font-mono text-sm mb-1 uppercase tracking-wider" style={{fontFamily: 'VT323, Courier New, monospace'}}>LOGO PADDING</label>
+                      <input
+                        type="range"
+                        min={0}
+                        max={8}
+                        value={Math.round(logoPaddingRatio * 100)}
+                        onChange={(e) => setLogoPaddingRatio(parseInt(e.target.value, 10) / 100)}
+                        className="w-full"
+                      />
+                    </div>
+                    <div className="flex items-center justify-between">
+                      <label className="flex items-center gap-2 text-[var(--text-secondary)] font-mono text-sm tracking-wider" style={{fontFamily: 'VT323, Courier New, monospace'}}>
+                        <input
+                          type="checkbox"
+                          checked={logoRounded}
+                          onChange={(e) => setLogoRounded(e.target.checked)}
+                        />
+                        ROUNDED BACKDROP
+                      </label>
+                      <button
+                        onClick={() => setLogoDataUrl(null)}
+                        className="neutral-button px-3 py-1 text-white font-mono text-sm uppercase tracking-wider hover:border-[var(--brand-color)] focus:ring-2 focus:ring-[var(--brand-color)]"
+                        style={{fontFamily: 'VT323, Courier New, monospace'}}
+                      >
+                        CLEAR LOGO
+                      </button>
+                    </div>
+                  </div>
+                )}
               </div>
 
               <button
